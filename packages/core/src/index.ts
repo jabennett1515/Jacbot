@@ -41,6 +41,8 @@ export { AgentManager } from './agent.js';
 export { TaskManager } from './task.js';
 export { Coordinator } from './coordinator.js';
 export { StateStore } from './state.js';
+export { ObsidianStore } from './obsidian-store.js';
+export type { ObsidianMCPClient } from './obsidian-store.js';
 
 export type {
   AgentConfig,

@@ -158,7 +158,7 @@ export class MemoryManager {
    * Recalls relevant memories across all scopes to pre-load the agent's context.
    * Inspired by GSD-2's context engineering approach.
    */
-  async buildContext(taskDescription: string, tags: string[] = []): Promise<string> {
+  async buildContext(taskId: string, taskDescription: string, tags: string[] = []): Promise<string> {
     const relevant = await this.recall({
       query: taskDescription,
       limit: 10,

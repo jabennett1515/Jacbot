@@ -75,7 +75,7 @@ export class Jacbot {
    * Define and register an agent.
    *
    * @example
-   * orch.defineAgent({
+   * jacbot.defineAgent({
    *   id: 'claude',
    *   name: 'Claude Code',
    *   role: 'lead',
@@ -95,7 +95,7 @@ export class Jacbot {
    * Create a task with optional dependencies, context files, and goal ancestry.
    *
    * @example
-   * const task = orch.createTask({
+   * const task = jacbot.createTask({
    *   title: 'Set up database schema',
    *   description: 'Create PostgreSQL schema with users and sessions tables',
    *   contextFiles: ['schema.sql', 'src/db.ts'],
@@ -124,7 +124,7 @@ export class Jacbot {
    * Returns which tasks were assigned to which agents.
    *
    * @example
-   * const dispatched = await orch.dispatch();
+   * const dispatched = await jacbot.dispatch();
    * for (const { taskId, agentId, branch } of dispatched) {
    *   console.log(`Task ${taskId} → Agent ${agentId} on branch ${branch}`);
    * }

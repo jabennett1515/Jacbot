@@ -5,8 +5,9 @@
  * Each command is a simple async function.
  */
 
-import { Jacbot } from '@jacbot/core';
+import { Jacbot, StateStore } from '@jacbot/core';
 import type { AgentRole, AgentRuntime, CoordinationStrategy } from '@jacbot/core';
+import { MemoryManager } from '@jacbot/memory';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -30,17 +31,45 @@ function logTable(headers: string[], rows: string[][]): void {
 }
 
 function loadJacbot(): Jacbot {
-  const configPath = join(process.cwd(), '.jacbot', 'project.json');
+  const statePath = join(process.cwd(), '.jacbot');
+  const configPath = join(statePath, 'project.json');
   if (!existsSync(configPath)) {
     throw new Error('No Jacbot project found. Run "jacbot init" first.');
   }
   const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-  return new Jacbot({
+  const jacbot = new Jacbot({
     name: config.name,
     mission: config.mission,
     strategy: config.coordination,
     budgetCeiling: config.budgetCeiling,
   });
+
+  // Rehydrate agents from state
+  const store = new StateStore(statePath);
+  for (const agentId of store.listAgents()) {
+    const saved = store.loadAgent(agentId);
+    if (saved) {
+      try { jacbot.agents.register(saved.config); } catch { /* already registered */ }
+    }
+  }
+
+  // Rehydrate tasks from state
+  for (const task of store.loadAllTasks()) {
+    try {
+      jacbot.tasks.create({
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        parentId: task.parentId,
+        dependsOn: task.dependsOn,
+        goalChain: task.goalChain,
+        contextFiles: task.contextFiles,
+        tags: task.tags,
+      });
+    } catch { /* task may already exist or have invalid deps */ }
+  }
+
+  return jacbot;
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────
@@ -156,10 +185,44 @@ async function waves(_args: string[]): Promise<void> {
 
   for (const wave of w) {
     const tasks = wave.taskIds.map(id => {
-      const task = orch.tasks.get(id);
+      const task = jacbot.tasks.get(id);
       return `${task.id} (${task.title.slice(0, 30)})`;
     });
     log(`  Wave ${wave.order}: ${tasks.join(', ')}`);
+  }
+}
+
+async function recall(args: string[]): Promise<void> {
+  const query = args.join(' ');
+  if (!query) throw new Error('Usage: jacbot recall "<query>" [--scope project|session|task] [--limit N]');
+
+  let scope: string | undefined;
+  let limit = 10;
+  const queryParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--scope' && args[i + 1]) { scope = args[++i]; }
+    else if (args[i] === '--limit' && args[i + 1]) { limit = parseInt(args[++i]); }
+    else { queryParts.push(args[i]); }
+  }
+
+  const memory = new MemoryManager();
+  const results = await memory.recall({
+    query: queryParts.join(' '),
+    scope: scope as any,
+    limit,
+  });
+
+  if (results.entries.length === 0) {
+    log('  No matching memories found.');
+    return;
+  }
+
+  log(`  Found ${results.totalMatches} memories (showing ${results.entries.length}):\n`);
+  for (const entry of results.entries) {
+    log(`  [${entry.scope}] ${entry.content.slice(0, 80)}`);
+    if (entry.tags.length > 0) log(`    Tags: ${entry.tags.join(', ')}`);
+    log('');
   }
 }
 
@@ -175,6 +238,7 @@ async function help(): Promise<void> {
     run                           Dispatch ready tasks to agents
     status                        Show project overview
     waves                         Show dependency waves
+    recall "<query>" [options]    Query agent memory
 
   Agent options:
     --runtime <runtime>   claude-code | cursor | opencode | gemini-cli | shell | custom
@@ -186,6 +250,10 @@ async function help(): Promise<void> {
     --depends <taskId>    Add a dependency (can repeat)
     --tag <tag>           Add a tag (can repeat)
     --context <file>      Add a context file (can repeat)
+
+  Recall options:
+    --scope <scope>       Filter by: project | session | task
+    --limit <N>           Max results (default: 10)
   `);
 }
 
@@ -199,6 +267,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   run: runDispatch,
   status,
   waves,
+  recall,
   help,
 };
 

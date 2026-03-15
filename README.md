@@ -46,27 +46,34 @@ npx jacbot run
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    Jacbot CLI                      │
-├──────────────────────────────────────────────────────┤
-│                                                      │
-│  ┌─────────┐  ┌──────────┐  ┌────────────────────┐  │
-│  │  Agent   │  │   Task   │  │    Coordinator     │  │
-│  │ Manager  │  │ Manager  │  │  (wave/seq/par)    │  │
-│  └────┬─────┘  └────┬─────┘  └────────┬───────────┘  │
-│       │             │                 │              │
-│  ┌────┴─────────────┴─────────────────┴───────────┐  │
-│  │              State Store (.jacbot/)          │  │
-│  │  agents/ tasks/ memory/ decisions.jsonl events/ │  │
-│  └────────────────────┬───────────────────────────┘  │
-│                       │                              │
-│  ┌────────────────────┴───────────────────────────┐  │
-│  │            Memory Manager                      │  │
-│  │  short-term (task) │ medium (session) │ long   │  │
-│  │  (project)  ←── Vector Store (semantic search) │  │
-│  └────────────────────────────────────────────────┘  │
-│                                                      │
-└──────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                       Jacbot CLI                           │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  ┌──────────┐  ┌───────────┐  ┌────────────────────────┐  │
+│  │  Agent   │  │   Task    │  │     Coordinator        │  │
+│  │ Manager  │  │  Manager  │  │   (wave/seq/par)       │  │
+│  └────┬─────┘  └─────┬─────┘  └───────────┬────────────┘  │
+│       │              │                     │               │
+│  ┌────┴──────────────┴─────────────────────┴────────────┐  │
+│  │            Obsidian Vault (via MCP)                   │  │
+│  │                                                       │  │
+│  │  Agents/       ← agent config, status, budget         │  │
+│  │  Tasks/        ← task specs, deps, results            │  │
+│  │  Memory/       ← 3-tier knowledge graph               │  │
+│  │    ├─ Project/    (persistent codebase knowledge)     │  │
+│  │    ├─ Session/    (cross-task summaries)               │  │
+│  │    └─ Task/       (ephemeral task notes)               │  │
+│  │  Decisions/    ← architectural decision log            │  │
+│  │  Waves/        ← execution wave plans                  │  │
+│  │  Dashboard.md  ← live Dataview queries                 │  │
+│  │                                                       │  │
+│  │  Everything is markdown + YAML frontmatter.            │  │
+│  │  Obsidian gives you: graph view, backlinks,            │  │
+│  │  search, Dataview, and git versioning for free.        │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ## Packages
@@ -74,7 +81,7 @@ npx jacbot run
 | Package | Description |
 |---------|-------------|
 | `@jacbot/core` | Runtime engine — agents, tasks, coordination, state persistence |
-| `@jacbot/memory` | Three-tier memory with local vector store for semantic recall |
+| `@jacbot/memory` | Three-tier memory backed by Obsidian vault (or in-memory fallback) |
 | `@jacbot/cli` | Command-line interface for project management |
 
 ## Core Concepts
@@ -147,26 +154,29 @@ Three strategies for dispatching tasks to agents:
 
 Waves are computed from the task dependency graph. Tasks in the same wave run in parallel; waves execute sequentially.
 
-### State
+### State — Obsidian as Knowledge Graph
 
-All state lives on disk in `.jacbot/` as JSON files. This means:
+Jacbot uses an **Obsidian vault** as its state and memory layer. No database needed — everything is markdown notes with YAML frontmatter, backlinks, and tags.
 
-- Full git-versionability (track how your project evolves)
-- Crash recovery (resume from where you left off)
-- Human-inspectable (just open the files)
-- No database required
+- **Graph view** — see how agents, tasks, and memories connect visually
+- **Dataview dashboard** — live tables for agent status, task progress, budget
+- **Backlinked memory** — memories link to source tasks, discoverable through Obsidian's graph
+- **Full-text search** — find any memory, decision, or result instantly
+- **Git-versionable** — it's just markdown files
+
+See the [Obsidian setup guide](docs/obsidian-setup.md) for installation instructions.
 
 ## Roadmap
 
-- [ ] Real embedding model support (OpenAI, Cohere, local transformers)
-- [ ] SQLite persistence for vector store
+- [x] Obsidian vault as knowledge graph and state layer
+- [x] Three-tier memory with Obsidian-backed recall
+- [x] Dataview dashboard with live queries
+- [ ] Runtime adapters (actually execute Claude Code, Cursor, etc.)
 - [ ] Git integration (auto-create branches, detect conflicts, merge)
-- [ ] Runtime adapters (actually execute agents, not just coordinate)
-- [ ] Web dashboard for real-time monitoring
-- [ ] MCP integration for tool-use agents
+- [ ] Real embedding model support for semantic memory recall
 - [ ] Plugin system for custom extensions
 - [ ] Crash recovery with session forensics
-- [ ] Multi-project Jacbot orchestration
+- [ ] Multi-project orchestration
 
 ## Inspired By
 

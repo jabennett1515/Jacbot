@@ -1,5 +1,4 @@
 {
-  "$schema": "../../packages/core/schema.json",
   "name": "rest-api",
   "mission": "Build a production-ready REST API with auth, CRUD, and tests",
   "strategy": "wave",

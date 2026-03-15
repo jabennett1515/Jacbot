@@ -7,9 +7,11 @@
  * 2. Medium-term (session scope) — summaries, decisions, and diffs across tasks in a session
  * 3. Long-term (project scope) — codebase knowledge, patterns, developer preferences
  *
- * Uses a local SQLite-backed vector store for semantic search.
- * No external dependencies — everything runs locally.
+ * Two storage backends:
+ * - ObsidianMemoryManager — uses an Obsidian vault as a knowledge graph (recommended)
+ * - MemoryManager — in-memory with simple vector store (fallback)
  */
 
 export { MemoryManager } from './memory-manager.js';
+export { ObsidianMemoryManager } from './obsidian-memory.js';
 export { SimpleVectorStore } from './vector-store.js';
