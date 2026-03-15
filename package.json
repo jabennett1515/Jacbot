@@ -1,0 +1,19 @@
+{
+  "name": "jacbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lightweight agent orchestration framework for AI coding agents with built-in memory, git-based coordination, and a simple developer experience.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint packages/*/src/**/*.ts"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

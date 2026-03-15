@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.jacbot/
+*.tgz
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+.turbo/

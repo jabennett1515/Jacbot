@@ -1,0 +1,23 @@
+{
+  "name": "@jacbot/cli",
+  "version": "0.1.0",
+  "description": "CLI for Jacbot — initialize projects, run agents, query memory.",
+  "type": "module",
+  "bin": {
+    "jacbot": "dist/bin.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@jacbot/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

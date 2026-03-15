@@ -1,0 +1,66 @@
+{
+  "$schema": "../../packages/core/schema.json",
+  "name": "rest-api",
+  "mission": "Build a production-ready REST API with auth, CRUD, and tests",
+  "strategy": "wave",
+  "budgetCeiling": 100,
+  "agents": [
+    {
+      "id": "lead",
+      "name": "Lead Agent",
+      "role": "lead",
+      "runtime": "claude-code",
+      "capabilities": ["typescript", "api-design", "architecture"],
+      "budgetLimit": 60
+    },
+    {
+      "id": "worker-1",
+      "name": "Worker Agent",
+      "role": "worker",
+      "runtime": "claude-code",
+      "capabilities": ["typescript", "testing"],
+      "budgetLimit": 40
+    }
+  ],
+  "tasks": [
+    {
+      "id": "setup",
+      "title": "Project setup",
+      "description": "Initialize Express project with TypeScript, ESLint, and project structure",
+      "priority": "high",
+      "tags": ["typescript", "setup"]
+    },
+    {
+      "id": "schema",
+      "title": "Database schema",
+      "description": "Create PostgreSQL schema with users, sessions, and posts tables",
+      "priority": "high",
+      "dependsOn": ["setup"],
+      "tags": ["database"]
+    },
+    {
+      "id": "auth",
+      "title": "Auth middleware",
+      "description": "Implement JWT-based authentication with login, register, and refresh endpoints",
+      "priority": "high",
+      "dependsOn": ["schema"],
+      "tags": ["typescript", "auth"]
+    },
+    {
+      "id": "crud",
+      "title": "CRUD endpoints",
+      "description": "Build RESTful CRUD endpoints for posts with pagination and validation",
+      "priority": "normal",
+      "dependsOn": ["schema", "auth"],
+      "tags": ["typescript", "api-design"]
+    },
+    {
+      "id": "tests",
+      "title": "Integration tests",
+      "description": "Write integration tests for all endpoints",
+      "priority": "normal",
+      "dependsOn": ["auth", "crud"],
+      "tags": ["testing"]
+    }
+  ]
+}
