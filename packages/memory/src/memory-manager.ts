@@ -21,11 +21,11 @@ function generateId(): string {
 }
 
 export class MemoryManager {
-  private store: SimpleVectorStore;
+  private vectorStore: SimpleVectorStore;
   private entries = new Map<string, MemoryEntry>();
 
   constructor(persistPath?: string) {
-    this.store = new SimpleVectorStore(persistPath);
+    this.vectorStore = new SimpleVectorStore(persistPath);
   }
 
   /**
@@ -57,10 +57,10 @@ export class MemoryManager {
     };
 
     // Generate embedding for semantic search
-    entry.embedding = this.store.embed(entry.content);
+    entry.embedding = this.vectorStore.embed(entry.content);
 
     this.entries.set(entry.id, entry);
-    this.store.add(entry.id, entry.embedding, {
+    this.vectorStore.add(entry.id, entry.embedding, {
       scope: entry.scope,
       tags: entry.tags,
       content: entry.content,
@@ -82,12 +82,12 @@ export class MemoryManager {
    * });
    */
   async recall(query: RecallQuery): Promise<RecallResult> {
-    const queryEmbedding = this.store.embed(query.query);
+    const queryEmbedding = this.vectorStore.embed(query.query);
     const limit = query.limit || 10;
     const minRelevance = query.minRelevance || 0.3;
 
     // Search by semantic similarity
-    let results = this.store.search(queryEmbedding, limit * 2); // oversample for filtering
+    let results = this.vectorStore.search(queryEmbedding, limit * 2); // oversample for filtering
 
     // Filter by scope
     if (query.scope) {
@@ -121,7 +121,7 @@ export class MemoryManager {
         if (!entry) return null;
         return { ...entry, relevance: r.similarity };
       })
-      .filter((e): e is MemoryEntry => e !== null);
+      .filter(e => e !== null) as MemoryEntry[];
 
     return {
       entries,
@@ -205,6 +205,22 @@ export class MemoryManager {
     }
 
     return sections.join('\n');
+  }
+
+  /**
+   * Restore a previously persisted memory entry.
+   * Used by CLI rehydration to reload from StateStore.
+   * Re-generates embeddings since they aren't persisted.
+   */
+  restore(entry: MemoryEntry): void {
+    // Re-generate embedding for search (embeddings aren't persisted to JSON)
+    entry.embedding = this.vectorStore.embed(entry.content);
+    this.entries.set(entry.id, entry);
+    this.vectorStore.add(entry.id, entry.embedding, {
+      scope: entry.scope,
+      tags: entry.tags,
+      content: entry.content,
+    });
   }
 
   /** Get total memory count */

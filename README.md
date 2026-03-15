@@ -1,190 +1,408 @@
 # Jacbot
 
-**Lightweight agent orchestration for AI coding agents.**
+**Agent orchestration with persistent memory and dependency-aware scheduling.**
 
-Jacbot coordinates multiple AI coding agents (Claude Code, Cursor, OpenCode, Gemini CLI) with built-in memory, git-based coordination, and dependency-aware scheduling. It's designed to be simple enough to adopt in an afternoon but powerful enough to run multi-agent dev projects.
+Jacbot coordinates multiple AI coding agents in parallel, gives them shared memory so they don't lose context between tasks, and persists everything to an Obsidian vault you can actually read.
 
-## Why Jacbot?
+![Jacbot wave execution](docs/gifs/wave-execution.gif)
 
-Existing frameworks are either too complex (full "company OS" abstractions) or too narrow (single-agent task runners). Jacbot sits in the middle:
+---
 
-- **Memory that persists** — Three-tier memory (task → session → project) so agents don't start every task from scratch
-- **Git-native coordination** — Agents work on branches. Conflicts are first-class events, not surprises
-- **Dependency-aware waves** — Tasks are scheduled in parallel waves based on their dependency graph
-- **Budget enforcement** — Hard per-agent and per-project cost limits with automatic pausing
-- **Bring your own agent** — Works with any coding agent that can receive a prompt and produce output
+## The Problem: Agents Forget Everything
 
-## Quick Start
+AI coding agents are stateless. Every time you spawn one, it starts from zero. This creates three concrete problems when you try to run multiple agents on a real project:
 
-```bash
-# Initialize a project
-npx jacbot init my-api "Build a REST API with auth and tests"
+1. **Context evaporates between tasks.** Agent A sets up the database schema with specific column names and constraints. Agent B starts the auth middleware 30 seconds later with zero knowledge of what Agent A decided. It hallucinates a schema, writes code against it, and the whole thing fails at integration.
 
-# Register agents
-npx jacbot agent add lead --runtime claude-code --role lead --budget 60
-npx jacbot agent add worker --runtime claude-code --role worker --budget 40
+2. **Decisions are invisible.** Agent A chose bcrypt with 12 salt rounds over argon2 for a specific reason (library compatibility with the deployment target). That rationale exists nowhere. When Agent C touches auth six tasks later, it has no way to know *why* bcrypt was chosen, so it "improves" it to argon2 and breaks the deployment.
 
-# Create tasks with dependencies
-npx jacbot task create "Project setup" --tag typescript
-npx jacbot task create "Database schema" --depends task_1 --tag database
-npx jacbot task create "Auth middleware" --depends task_2 --tag auth
-npx jacbot task create "CRUD endpoints" --depends task_2 --depends task_3
-npx jacbot task create "Integration tests" --depends task_3 --depends task_4
+3. **There's no shared state layer.** Git branches solve code isolation but not knowledge sharing. Agents working in parallel on different branches can't see each other's architectural decisions, API contracts, or conventions without manually copying context between them.
 
-# View the execution plan
-npx jacbot waves
-# Wave 0: Project setup
-# Wave 1: Database schema
-# Wave 2: Auth middleware
-# Wave 3: CRUD endpoints
-# Wave 4: Integration tests
+Jacbot solves this with a three-tier memory system backed by an Obsidian vault — every decision, convention, and task result is stored as a markdown note that agents can query before starting work.
 
-# Dispatch
-npx jacbot run
-```
+---
 
-## Architecture
+## How It Works
+
+![Jacbot architecture overview](docs/gifs/architecture-overview.gif)
+
+### The Run Loop
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│                       Jacbot CLI                           │
-├────────────────────────────────────────────────────────────┤
-│                                                            │
-│  ┌──────────┐  ┌───────────┐  ┌────────────────────────┐  │
-│  │  Agent   │  │   Task    │  │     Coordinator        │  │
-│  │ Manager  │  │  Manager  │  │   (wave/seq/par)       │  │
-│  └────┬─────┘  └─────┬─────┘  └───────────┬────────────┘  │
-│       │              │                     │               │
-│  ┌────┴──────────────┴─────────────────────┴────────────┐  │
-│  │            Obsidian Vault (via MCP)                   │  │
-│  │                                                       │  │
-│  │  Agents/       ← agent config, status, budget         │  │
-│  │  Tasks/        ← task specs, deps, results            │  │
-│  │  Memory/       ← 3-tier knowledge graph               │  │
-│  │    ├─ Project/    (persistent codebase knowledge)     │  │
-│  │    ├─ Session/    (cross-task summaries)               │  │
-│  │    └─ Task/       (ephemeral task notes)               │  │
-│  │  Decisions/    ← architectural decision log            │  │
-│  │  Waves/        ← execution wave plans                  │  │
-│  │  Dashboard.md  ← live Dataview queries                 │  │
-│  │                                                       │  │
-│  │  Everything is markdown + YAML frontmatter.            │  │
-│  │  Obsidian gives you: graph view, backlinks,            │  │
-│  │  search, Dataview, and git versioning for free.        │  │
-│  └───────────────────────────────────────────────────────┘  │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
+1. Parse task DAG → compute dependency waves
+2. For each wave:
+   a. Find idle agents with matching capabilities
+   b. For each dispatch:
+      - memory.buildContext(task) → recall relevant memories
+      - adapter.execute(task, agent, context) → spawn subprocess
+      - Parse structured result (JACBOT_RESULT block)
+      - Store task summary + decisions back into memory
+   c. All tasks in wave complete → advance to next wave
+3. Write run summary to Obsidian vault
 ```
+
+Tasks form a directed acyclic graph. Jacbot resolves the DAG into **waves** — groups of tasks whose dependencies are all satisfied. Tasks within a wave execute in parallel. Waves execute sequentially.
+
+```
+Wave 0: [project-setup]
+Wave 1: [database-schema]
+Wave 2: [auth-middleware, crud-endpoints]  ← parallel
+Wave 3: [integration-tests]
+```
+
+Agents are matched to tasks by capability tags. A task tagged `['auth', 'security']` prefers an agent with those capabilities, but falls back to any idle agent. Assignment is atomic — one agent per task, no contention.
+
+### Runtime Adapters
+
+Jacbot doesn't run your code. It spawns coding agents as subprocesses and collects their output. The `ClaudeCodeAdapter` calls `claude --print --output-format json`, injects the task prompt with memory context, and parses the structured result.
+
+```typescript
+// The adapter builds a prompt like this:
+`You are an AI coding agent working as part of a coordinated team.
+Project mission: ${mission}
+Your role: ${agent.role} (${agent.name})
+
+## Task: ${task.title}
+${task.description}
+
+## Goal Chain
+1. ${mission}
+2. ${parentGoal}
+3. ${task.title}
+
+## Key Files
+${task.contextFiles.map(f => `- ${f}`).join('\n')}
+
+## Relevant Context from Previous Work
+${memoryContext}  // ← this is where recalled memories go
+
+## Branch
+Work on branch: jacbot/${task.id}
+
+When done, output:
+JACBOT_RESULT_START
+summary: <one line>
+exit_code: success|partial|failed
+files_changed:
+- <file>
+decisions:
+- decision: <what>
+  rationale: <why>
+JACBOT_RESULT_END`
+```
+
+The adapter interface is intentionally minimal — implement `execute()` and `abort()` to support any agent runtime.
+
+---
+
+## Memory Architecture
+
+![Memory recall in action](docs/gifs/memory-recall.gif)
+
+This is the core of what Jacbot does differently. The memory system has three scopes, each with different lifetimes and visibility:
+
+### Three-Tier Memory
+
+| Scope | Lifetime | What it stores | Example |
+|-------|----------|---------------|---------|
+| **Task** | Dies when task completes | Ephemeral working notes | "Tried using pg-promise but switched to Knex for migration support" |
+| **Session** | Carries across tasks in a run | Cross-task summaries, contracts | "Auth middleware exports `verifyToken()` that returns `{ userId, role }`" |
+| **Project** | Persists indefinitely | Codebase knowledge, conventions | "All API responses use `{ data, error, meta }` envelope format" |
+
+When an agent finishes a task, Jacbot automatically extracts its summary and decisions and stores them as session-scoped memories. Architectural decisions get promoted to project scope.
+
+### How Recall Works Before Each Task
+
+Before dispatching a task, Jacbot calls `memory.buildContext()` which:
+
+1. **Queries by relevance** — bag-of-words embedding + cosine similarity against the task description
+2. **Filters by scope** — project memories always included, session memories for current run, task memories only for retries
+3. **Filters by tags** — task tagged `['auth']` pulls memories tagged `['auth']` first
+4. **Assembles markdown context** — grouped by scope, injected into the agent's prompt
+
+```typescript
+// What the agent actually receives:
+`## Relevant Context from Previous Work
+
+### Project Knowledge
+- All API responses use { data, error, meta } envelope format
+- Database uses Knex with PostgreSQL, migrations in src/db/migrations/
+- Auth uses bcrypt (12 rounds) — chosen for deployment target compatibility
+
+### Recent Session Context
+- Task "database-schema": Created users, sessions, and api_keys tables.
+  Key decision: used UUID primary keys instead of auto-increment for
+  distributed ID generation.
+- Task "auth-middleware": Implemented JWT verification middleware.
+  Exports verifyToken() returning { userId, role }.`
+```
+
+This is how Agent C knows *why* bcrypt was chosen and *what* the database schema looks like — without reading Agent A's branch or parsing git diffs.
+
+### Memory Backends
+
+**SimpleVectorStore (default):** In-memory bag-of-words embeddings with cosine similarity. No external dependencies. Vocabulary builds incrementally as memories are stored. Good enough for projects with < 1000 memories.
+
+**ObsidianMemoryManager:** Stores memories as `.md` files in the vault. Uses tag-based filtering + full-text search for recall. Tracks which task retrieved which memory (recall provenance). Memories are human-readable and show up in Obsidian's graph view.
+
+---
+
+## Obsidian as the State Layer
+
+![Obsidian graph view](docs/gifs/obsidian-graph.gif)
+
+Most orchestration tools store state in databases or JSON blobs that are opaque to humans. Jacbot stores *everything* as markdown notes in an Obsidian vault. This isn't a nice-to-have visualization layer — it's the primary state store.
+
+### Why Obsidian?
+
+The memory problem with parallel agents is fundamentally a **knowledge graph** problem. You need:
+
+- Typed relationships between entities (agent → task → memory → decision)
+- Fast full-text search across all stored knowledge
+- A way for humans to inspect, edit, and curate agent memory
+- Version control (it's markdown, so `git` works)
+
+Obsidian gives you all of this for free. No database to run, no migrations, no query language to learn. Open the vault and you can see exactly what your agents know, what they decided, and why.
+
+### Vault Structure
+
+```
+Jacbot/
+├── 00 Dashboard.md                    # Dataview queries — live agent/task/budget tables
+├── 01 Tag Index.md                    # Tag taxonomy reference
+│
+├── Agents/
+│   ├── _Agents MOC.md                 # Map of Content — all agents at a glance
+│   └── Agent · Claude Lead.md         # Config, status, activity log, token usage
+│
+├── Tasks/
+│   ├── _Tasks MOC.md                  # Task board view (kanban-style via Dataview)
+│   └── Task · Auth Middleware.md      # Description, deps, result, files changed
+│
+├── Memory/
+│   ├── _Memory MOC.md
+│   ├── Project/                       # Persistent codebase knowledge
+│   │   └── API envelope format.md
+│   ├── Session/                       # Cross-task summaries (TTL-based)
+│   │   └── Auth middleware exports.md
+│   └── Task/                          # Ephemeral notes (auto-expire)
+│       └── Knex vs pg-promise.md
+│
+├── Decisions/
+│   ├── _Decisions MOC.md              # Architectural decision log
+│   └── DEC-001 Use bcrypt.md          # Decision + rationale + alternatives considered
+│
+├── Runs/
+│   └── Run 2026-03-15T14-30.md        # All tasks, events, and costs for one execution
+│
+├── Waves/
+│   └── Wave 0.md                      # Which tasks, which agents, dependency viz
+│
+├── Events/
+│   └── EVT 2026-03-15 task_completed.md
+│
+├── Canvas/
+│   └── Pipeline.canvas                # Visual wave pipeline (Obsidian Canvas)
+│
+└── Templates/                         # Note templates for all entity types
+```
+
+Every note uses consistent YAML frontmatter:
+
+```yaml
+---
+type: task
+id: auth-middleware
+status: completed
+created: 2026-03-15T14:32:00Z
+updated: 2026-03-15T14:45:12Z
+tags: [jb/task/completed, jb/priority/high, jb/topic/auth]
+assignee: "[[Agent · Claude Lead]]"
+depends_on: ["[[Task · Database Schema]]"]
+wave: 2
+---
+```
+
+### Tag Taxonomy
+
+All notes use a strict hierarchical tag system under `#jb/`:
+
+```
+#jb/agent          — agent notes (sub-tags by role)
+#jb/task/pending   — task status tracking
+#jb/task/completed
+#jb/memory/project — memory by scope
+#jb/memory/session
+#jb/memory/task
+#jb/decision       — architectural decisions
+#jb/run            — execution runs
+#jb/wave           — dependency waves
+#jb/topic/auth     — domain tags (auth, database, testing, etc.)
+```
+
+Tags drive Dataview queries in the dashboard — you get live tables of agent status, task progress, budget burn, and memory distribution without writing any code.
+
+### What You Actually See
+
+The **Dashboard** (`00 Dashboard.md`) runs Dataview queries that produce:
+
+- Agent status table (idle/working/budget_exceeded, current task, token spend)
+- Task progress board (grouped by status, with assignee and wave)
+- Budget burndown (per-agent and total, with ceiling)
+- Recent decisions (last 10, with rationale)
+- Memory stats (count by scope, last recall timestamps)
+
+The **Graph View** shows the full knowledge graph — agents connected to their tasks, tasks connected to their memories and decisions, memories connected to other memories by tag. You can visually trace *why* an agent made a specific choice by following the backlinks.
+
+![Obsidian dashboard](docs/gifs/obsidian-dashboard.gif)
+
+---
+
+## Coordination Strategies
+
+### Wave (default, recommended)
+
+Computes a DAG from task dependencies, extracts parallel execution waves:
+
+```typescript
+// coordinator.ts — simplified wave computation
+computeWaves(tasks: Task[]): Wave[] {
+  const waves: Wave[] = [];
+  const completed = new Set<string>();
+
+  while (completed.size < tasks.length) {
+    const ready = tasks.filter(t =>
+      !completed.has(t.id) &&
+      t.dependsOn.every(dep => completed.has(dep))
+    );
+    waves.push({ order: waves.length, taskIds: ready.map(t => t.id) });
+    ready.forEach(t => completed.add(t.id));
+  }
+
+  return waves;
+}
+```
+
+Agent-task matching scores by capability overlap, with role bonuses (lead agents prefer high-priority tasks). Assignment is atomic — `AgentManager.checkout(agentId, taskId)` sets the agent to `working` and the task to `in_progress` in one operation.
+
+### Sequential
+
+One task at a time. Useful for debugging or when tasks have implicit ordering that isn't captured in `dependsOn`.
+
+### Parallel
+
+All ready tasks dispatched simultaneously. Fastest, but no dependency awareness — use only when tasks are truly independent.
+
+---
+
+## Budget Enforcement
+
+Every agent has a `budgetLimit` in USD. Every task execution tracks `TokenUsage`:
+
+```typescript
+interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+}
+```
+
+After each task completes, the agent's cumulative cost is checked. If it exceeds the limit, the agent transitions to `budget_exceeded` and is removed from the dispatch pool. There's also a project-level `budgetCeiling` — if total spend across all agents exceeds this, the entire run halts.
+
+The Claude Code adapter extracts token usage from `--output-format json` responses. For other runtimes, usage is estimated from output length.
+
+---
+
+## Config File
+
+Jacbot supports declarative configuration via `jacbot.config.ts`:
+
+```typescript
+import { defineConfig } from '@jacbot/core';
+
+export default defineConfig({
+  name: 'rest-api',
+  mission: 'Build a production-ready REST API with auth, CRUD, and tests',
+  strategy: 'wave',
+  budgetCeiling: 100,
+
+  runtimes: {
+    'claude-code': { maxTurns: 20, timeoutMs: 300_000 },
+  },
+
+  agents: [
+    {
+      id: 'architect',
+      name: 'Architect',
+      role: 'lead',
+      runtime: 'claude-code',
+      capabilities: ['typescript', 'api-design', 'architecture'],
+      budgetLimit: 60,
+      instructions: 'Focus on clean abstractions and consistent patterns.',
+    },
+    {
+      id: 'implementer',
+      name: 'Implementer',
+      role: 'worker',
+      runtime: 'claude-code',
+      capabilities: ['typescript', 'testing', 'database'],
+      budgetLimit: 40,
+    },
+  ],
+
+  tasks: [
+    { id: 'setup', title: 'Project setup', priority: 'high', tags: ['typescript'] },
+    { id: 'schema', title: 'Database schema', dependsOn: ['setup'], tags: ['database'] },
+    { id: 'auth', title: 'Auth middleware', dependsOn: ['schema'], tags: ['auth'] },
+    { id: 'crud', title: 'CRUD endpoints', dependsOn: ['schema'], tags: ['typescript'] },
+    { id: 'tests', title: 'Integration tests', dependsOn: ['auth', 'crud'], tags: ['testing'] },
+  ],
+});
+```
+
+The config loader uses dynamic `import()` and supports `.ts`, `.js`, and `.mjs` extensions.
+
+---
 
 ## Packages
 
-| Package | Description |
+| Package | What it does |
 |---------|-------------|
-| `@jacbot/core` | Runtime engine — agents, tasks, coordination, state persistence |
-| `@jacbot/memory` | Three-tier memory backed by Obsidian vault (or in-memory fallback) |
-| `@jacbot/cli` | Command-line interface for project management |
+| **`@jacbot/core`** | Runtime engine — `Jacbot` class, `Coordinator`, `AgentManager`, `TaskManager`, `StateStore`, `ObsidianStore`, runtime adapter registry |
+| **`@jacbot/memory`** | `MemoryManager` (store/recall/buildContext), `SimpleVectorStore` (bag-of-words embeddings), `ObsidianMemoryManager` (vault-backed recall with provenance tracking) |
+| **`@jacbot/cli`** | CLI commands — `init`, `agent add`, `task create`, `run`, `status`, `waves`, `recall`, `check runtime` |
 
-## Core Concepts
+---
 
-### Agents
+## State Persistence
 
-Agents are the workers. Each agent has a runtime (how it executes), a role (what it specializes in), capabilities (what it's good at), and a budget limit.
+Jacbot maintains a `.jacbot/` directory with JSON-based state:
 
-```typescript
-orch.defineAgent({
-  id: 'claude',
-  name: 'Claude Code',
-  role: 'lead',
-  runtime: 'claude-code',
-  capabilities: ['typescript', 'api-design'],
-  budgetLimit: 50, // USD
-});
+```
+.jacbot/
+├── project.json          # Name, mission, strategy, agent roster
+├── agents/{id}.json      # AgentConfig + AgentState (status, token usage, heartbeat)
+├── tasks/{id}.json       # Full Task object (status, result, usage, decisions)
+├── memory/{id}.json      # MemoryEntry (content, embedding, scope, tags, expiry)
+├── decisions.jsonl       # Append-only decision log
+├── events.jsonl          # Append-only coordination event stream
+└── sessions/{id}.json    # Session recovery data
 ```
 
-Supported runtimes: `claude-code`, `cursor`, `opencode`, `gemini-cli`, `shell`, `custom`
+This is the source of truth. The Obsidian vault is a formatted projection of this state — human-readable, browsable, and queryable, but derived from the JSON layer. Both stay in sync via event subscriptions.
 
-### Tasks
+---
 
-Tasks are units of work with explicit dependencies. They form a DAG (directed acyclic graph) that Jacbot resolves into execution waves.
+## Design Lineage
 
-```typescript
-const auth = orch.createTask({
-  title: 'Auth middleware',
-  description: 'JWT-based auth with bcrypt',
-  dependsOn: [schemaTask.id],
-  contextFiles: ['src/middleware/auth.ts'],
-  tags: ['auth', 'security'],
-});
-```
+| Concept | Origin |
+|---------|--------|
+| Wave-based scheduling, context engineering, goal chains | [GSD-2](https://github.com/gsd-build/gsd-2) |
+| Local-first state, workflow templates | [Cognetivy](https://github.com/meitarbe/cognetivy) |
+| Budget enforcement, atomic task checkout, goal ancestry | [Paperclip](https://github.com/paperclipai/paperclip) |
 
-Task lifecycle: `pending → queued → in_progress → review → completed`
-
-### Memory
-
-The memory system has three tiers:
-
-- **Task scope** — ephemeral notes within a single task's context window
-- **Session scope** — summaries and decisions that carry across tasks in a session
-- **Project scope** — codebase knowledge, patterns, and preferences that persist forever
-
-```typescript
-// Store a memory
-await memory.store({
-  content: 'Auth module uses bcrypt with 12 salt rounds',
-  scope: 'project',
-  sourceId: task.id,
-  tags: ['auth'],
-});
-
-// Recall relevant memories before starting a new task
-const context = await memory.buildContext(
-  'implement password reset endpoint',
-  ['auth']
-);
-// Returns: relevant project knowledge, recent session context, related task notes
-```
-
-### Coordination
-
-Three strategies for dispatching tasks to agents:
-
-- **sequential** — one task at a time (safest)
-- **parallel** — all ready tasks dispatched at once (fastest)
-- **wave** — dependency-aware batches (recommended, default)
-
-Waves are computed from the task dependency graph. Tasks in the same wave run in parallel; waves execute sequentially.
-
-### State — Obsidian as Knowledge Graph
-
-Jacbot uses an **Obsidian vault** as its state and memory layer. No database needed — everything is markdown notes with YAML frontmatter, backlinks, and tags.
-
-- **Graph view** — see how agents, tasks, and memories connect visually
-- **Dataview dashboard** — live tables for agent status, task progress, budget
-- **Backlinked memory** — memories link to source tasks, discoverable through Obsidian's graph
-- **Full-text search** — find any memory, decision, or result instantly
-- **Git-versionable** — it's just markdown files
-
-See the [Obsidian setup guide](docs/obsidian-setup.md) for installation instructions.
-
-## Roadmap
-
-- [x] Obsidian vault as knowledge graph and state layer
-- [x] Three-tier memory with Obsidian-backed recall
-- [x] Dataview dashboard with live queries
-- [ ] Runtime adapters (actually execute Claude Code, Cursor, etc.)
-- [ ] Git integration (auto-create branches, detect conflicts, merge)
-- [ ] Real embedding model support for semantic memory recall
-- [ ] Plugin system for custom extensions
-- [ ] Crash recovery with session forensics
-- [ ] Multi-project orchestration
-
-## Inspired By
-
-Jacbot takes ideas from several excellent projects:
-
-- **[GSD-2](https://github.com/gsd-build/gsd-2)** — Context engineering, wave-based scheduling, subagent specialization
-- **[Cognetivy](https://github.com/meitarbe/cognetivy)** — Local-first state, workflow templates, MCP integration
-- **[Paperclip](https://github.com/paperclipai/paperclip)** — Budget enforcement, atomic task checkout, goal ancestry
+---
 
 ## License
 

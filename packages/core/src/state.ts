@@ -66,7 +66,7 @@ export class StateStore {
   private listDir(dirPath: string): string[] {
     const fullPath = join(this.basePath, dirPath);
     if (!existsSync(fullPath)) return [];
-    return readdirSync(fullPath).filter(f => f.endsWith('.json')).map(f => f.replace('.json', ''));
+    return readdirSync(fullPath).filter((f: string) => f.endsWith('.json')).map((f: string) => f.replace('.json', ''));
   }
 
   // ─── Project Config ─────────────────────────────────────────────────────

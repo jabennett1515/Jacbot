@@ -98,16 +98,20 @@ export class Coordinator {
 
   /** Dispatch a single task to the best available agent */
   private async dispatchTask(task: Task): Promise<DispatchResult | null> {
-    // Find available agents with matching capabilities
-    const available = this.agentManager.findAvailable(
+    // Try to find agents whose capabilities overlap with task tags (preference, not hard filter)
+    let available = this.agentManager.findAvailable(
       task.tags.length > 0 ? task.tags : undefined
     );
 
+    // If no agents match capabilities, fall back to any idle agent
+    if (available.length === 0) {
+      available = this.agentManager.findAvailable();
+    }
+
     if (available.length === 0) return null;
 
-    // Simple strategy: pick the first available agent
-    // Future: smarter matching based on agent specialization, load, cost
-    const agent = available[0];
+    // Pick the best match: prefer agents with more overlapping capabilities
+    const agent = this.pickBestAgent(available, task);
 
     // Atomic checkout
     const success = this.agentManager.checkout(agent.id, task);
@@ -179,12 +183,29 @@ export class Coordinator {
 
   /** Generate a git branch name for a task */
   private generateBranchName(task: Task): string {
-    const slug = task.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40);
-    return `jacbot/${task.id.split('_')[1]}-${slug}`;
+    return `jacbot/${task.id}`;
+  }
+
+  /** Pick the best agent for a task based on capability overlap */
+  private pickBestAgent(agents: AgentConfig[], task: Task): AgentConfig {
+    if (task.tags.length === 0 || agents.length === 1) return agents[0];
+
+    // Score by how many task tags match agent capabilities
+    let best = agents[0];
+    let bestScore = 0;
+
+    for (const agent of agents) {
+      const caps = agent.capabilities || [];
+      const score = task.tags.filter(t => caps.includes(t)).length;
+      // Prefer lead agents for higher-priority tasks
+      const roleBonus = agent.role === 'lead' && task.priority === 'high' ? 1 : 0;
+      if (score + roleBonus > bestScore) {
+        bestScore = score + roleBonus;
+        best = agent;
+      }
+    }
+
+    return best;
   }
 
   /** Get current waves for visibility */

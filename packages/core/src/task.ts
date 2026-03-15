@@ -12,16 +12,23 @@
 
 import type { Task, TaskStatus, TaskPriority, TaskResult, Wave, CoordinationStrategy } from './types.js';
 
-let taskCounter = 0;
-function generateId(): string {
-  return `task_${Date.now()}_${++taskCounter}`;
+/** Generate a human-readable slug ID from a title */
+function slugId(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
 }
+
+let dedupeCounter = 0;
 
 export class TaskManager {
   private tasks = new Map<string, Task>();
 
   /** Create a new task */
   create(params: {
+    id?: string;
     title: string;
     description: string;
     priority?: TaskPriority;
@@ -40,8 +47,15 @@ export class TaskManager {
       goalChain = [...parent.goalChain, parent.title];
     }
 
+    // Generate human-readable ID from title, or use explicit ID
+    let id = params.id || slugId(params.title);
+    if (this.tasks.has(id)) {
+      // Deduplicate: append a counter
+      id = `${id}-${++dedupeCounter}`;
+    }
+
     const task: Task = {
-      id: generateId(),
+      id,
       title: params.title,
       description: params.description,
       status: 'pending',
@@ -63,6 +77,15 @@ export class TaskManager {
 
     this.tasks.set(task.id, task);
     return task;
+  }
+
+  /**
+   * Restore a task from persisted state (preserves original ID, status, timestamps).
+   * Used by CLI rehydration and state loading. Does NOT validate dependencies
+   * since they may be restored out of order.
+   */
+  restore(task: Task): void {
+    this.tasks.set(task.id, task);
   }
 
   /** Get a task by ID */

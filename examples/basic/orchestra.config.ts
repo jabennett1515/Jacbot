@@ -2,10 +2,11 @@
  * Example: Basic Jacbot Configuration
  *
  * This demonstrates setting up a project with two agents
- * working on a REST API with dependency-aware task scheduling.
+ * working on a REST API with dependency-aware task scheduling
+ * and actual execution via the Claude Code runtime adapter.
  */
 
-import { Jacbot } from '@jacbot/core';
+import { Jacbot, ClaudeCodeAdapter } from '@jacbot/core';
 
 async function main() {
   // ─── Initialize Project ───────────────────────────────────────────────
@@ -17,6 +18,13 @@ async function main() {
     budgetCeiling: 100,
   });
 
+  // ─── Register Runtime Adapter ────────────────────────────────────────
+
+  jacbot.registerRuntime(new ClaudeCodeAdapter({
+    maxTurns: 20,
+    timeoutMs: 5 * 60 * 1000, // 5 minutes per task
+  }));
+
   // ─── Register Agents ──────────────────────────────────────────────────
 
   jacbot.defineAgent({
@@ -26,6 +34,7 @@ async function main() {
     runtime: 'claude-code',
     capabilities: ['typescript', 'api-design', 'architecture'],
     budgetLimit: 60,
+    instructions: 'You are the lead architect. Focus on clean, well-structured code.',
   });
 
   jacbot.defineAgent({
@@ -35,6 +44,7 @@ async function main() {
     runtime: 'claude-code',
     capabilities: ['typescript', 'testing'],
     budgetLimit: 40,
+    instructions: 'You are a worker agent. Follow the patterns set by the lead.',
   });
 
   // ─── Create Tasks with Dependencies ───────────────────────────────────
@@ -99,18 +109,30 @@ async function main() {
   //   Wave 3: CRUD endpoints
   //   Wave 4: Integration tests
 
-  // ─── Dispatch ─────────────────────────────────────────────────────────
+  // ─── Subscribe to Events (optional) ──────────────────────────────────
 
-  console.log('\nDispatching...');
-  const dispatched = await jacbot.dispatch();
+  jacbot.on(async (event) => {
+    const time = event.timestamp.toLocaleTimeString();
+    console.log(`  [${time}] ${event.type}: ${event.taskId} → ${event.agentId}`);
+  });
 
-  for (const d of dispatched) {
-    console.log(`  ${d.taskId} → ${d.agentId} (branch: ${d.branch})`);
+  // ─── Run Everything ────────────────────────────────────────────────────
+
+  console.log('\nRunning...');
+  const run = await jacbot.run();
+
+  console.log(`\nDone in ${(run.durationMs / 1000).toFixed(1)}s`);
+  console.log(`  Completed: ${run.results.size}`);
+  console.log(`  Failed: ${run.errors.size}`);
+  console.log(`  Total cost: $${jacbot.status().totalCost.toFixed(4)}`);
+
+  for (const [taskId, result] of run.results) {
+    console.log(`\n  ${taskId}: ${result.exitCode}`);
+    console.log(`    ${result.summary}`);
+    if (result.filesChanged.length > 0) {
+      console.log(`    Files: ${result.filesChanged.join(', ')}`);
+    }
   }
-
-  // ─── Status ───────────────────────────────────────────────────────────
-
-  console.log('\nStatus:', jacbot.status());
 }
 
 main().catch(console.error);
